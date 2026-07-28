@@ -1,0 +1,33 @@
+name: Context Demo
+
+on:
+  push:
+
+env:
+  APP: SpringBoot
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Print Contexts
+
+        run: |
+
+          echo "Repository : ${{ github.repository }}"
+
+          echo "Branch     : ${{ github.ref_name }}"
+
+          echo "Actor      : ${{ github.actor }}"
+
+          echo "Workflow   : ${{ github.workflow }}"
+
+          echo "Run Number : ${{ github.run_number }}"
+
+          echo "OS         : ${{ runner.os }}"
+
+          echo "App        : ${{ env.APP }}"
