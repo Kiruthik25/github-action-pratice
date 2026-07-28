@@ -1,0 +1,58 @@
+name: Deploy - Development
+
+on:
+  workflow_run:
+    workflows: ["Docker Build & Push"]
+    types: [completed]
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  deployments: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  deploy-dev:
+    name: Deploy to Development
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: development
+      url: https://dev.example.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.DEV_KUBECONFIG }}" | base64 -d > "$HOME/.kube/config"
+
+      - name: Deploy image to Development
+        run: |
+          kubectl set image deployment/spring-boot-app \
+            app=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::7} \
+            -n development
+          kubectl rollout status deployment/spring-boot-app -n development --timeout=120s
+
+      - name: Smoke test
+        run: |
+          curl --fail --retry 5 --retry-delay 5 https://dev.example.com/actuator/health
+
+      - name: Notify team
+        if: always()
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          payload: |
+            {
+              "text": "Development deployment ${{ job.status }} for run #${{ github.run_number }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

@@ -1,0 +1,106 @@
+name: Deploy - Production
+
+on:
+  workflow_run:
+    workflows: ["Deploy - Staging"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      image-tag:
+        description: "Image tag to deploy (sha-xxxxxxx)"
+        required: true
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  deployments: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  approval-gate:
+    name: Manual Approval
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    # The "production" environment must have required reviewers configured
+    # in repo Settings > Environments to enforce a manual approval gate here.
+    environment:
+      name: production-approval
+    steps:
+      - name: Approval granted
+        run: echo "Deployment to production approved by required reviewer."
+
+  deploy-prod:
+    name: Deploy to Production
+    needs: approval-gate
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://app.example.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.image-tag }}" ]; then
+            echo "tag=${{ inputs.image-tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.PROD_KUBECONFIG }}" | base64 -d > "$HOME/.kube/config"
+
+      - name: Record current image (for rollback)
+        id: previous
+        run: |
+          PREV=$(kubectl get deployment spring-boot-app -n production \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "image=$PREV" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy image to Production
+        run: |
+          kubectl set image deployment/spring-boot-app \
+            app=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }} \
+            -n production
+          kubectl rollout status deployment/spring-boot-app -n production --timeout=180s
+
+      - name: Health check
+        id: health
+        continue-on-error: true
+        run: |
+          curl --fail --retry 8 --retry-delay 10 https://app.example.com/actuator/health
+
+      - name: Rollback on failed health check
+        if: steps.health.outcome == 'failure'
+        run: |
+          kubectl set image deployment/spring-boot-app \
+            app=${{ steps.previous.outputs.image }} \
+            -n production
+          kubectl rollout status deployment/spring-boot-app -n production --timeout=120s
+          echo "Rolled back to ${{ steps.previous.outputs.image }}"
+
+      - name: Fail workflow if rolled back
+        if: steps.health.outcome == 'failure'
+        run: exit 1
+
+      - name: Notify team
+        if: always()
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          payload: |
+            {
+              "text": "Production deployment ${{ job.status }} for run #${{ github.run_number }} (tag: ${{ steps.tag.outputs.tag }})"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

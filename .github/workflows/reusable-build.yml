@@ -1,0 +1,106 @@
+name: Reusable - Build, Test & Package
+
+on:
+  workflow_call:
+    inputs:
+      java-version:
+        description: "Java version to use"
+        required: false
+        type: string
+        default: "21"
+      run-sonar:
+        description: "Whether to run SonarQube analysis"
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      SONAR_TOKEN:
+        required: false
+    outputs:
+      artifact-name:
+        description: "Name of the uploaded build artifact"
+        value: ${{ jobs.build.outputs.artifact-name }}
+      jar-version:
+        description: "Version of the built JAR"
+        value: ${{ jobs.build.outputs.jar-version }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: ${{ steps.set-outputs.outputs.artifact-name }}
+      jar-version: ${{ steps.set-outputs.outputs.jar-version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed for SonarQube blame/history analysis
+
+      - name: Set up Java ${{ inputs.java-version }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            maven-${{ runner.os }}-
+
+      - name: Compile
+        run: mvn -B compile
+
+      - name: Run unit tests
+        run: mvn -B test
+
+      - name: Publish test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: target/surefire-reports/
+          retention-days: 7
+
+      - name: Generate code coverage report
+        run: mvn -B jacoco:report
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: target/site/jacoco/
+          retention-days: 7
+
+      - name: Static code analysis (SonarQube)
+        if: inputs.run-sonar == true
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: mvn -B sonar:sonar -Dsonar.projectKey=spring-boot-cicd
+
+      - name: Dependency security scan
+        run: mvn -B org.owasp:dependency-check-maven:check
+
+      - name: Package application
+        run: mvn -B package -DskipTests
+
+      - name: Set outputs
+        id: set-outputs
+        run: |
+          VERSION=$(mvn -B help:evaluate -Dexpression=project.version -q -DforceStdout)
+          echo "jar-version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "artifact-name=app-jar-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar-${{ github.run_number }}
+          path: target/*.jar
+          retention-days: 14
