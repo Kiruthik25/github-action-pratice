@@ -1,0 +1,29 @@
+name: Java CI
+
+on:
+  push:
+
+env:
+  APP_NAME: Demo
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Print Message
+        run: echo "Building $APP_NAME"
+
+      - name: Show Current Directory
+        run: |
+          pwd
+          ls
